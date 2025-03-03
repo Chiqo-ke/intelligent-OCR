@@ -1,0 +1,8 @@
+flask
+flask-restful
+passlib
+pyjwt
+python-dotenv
+gunicorn
+Flask-Session
+cryptography

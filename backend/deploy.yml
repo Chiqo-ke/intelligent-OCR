@@ -1,0 +1,130 @@
+---
+- name: Deploy Backend API
+  hosts: app_servers
+  become: true
+  vars:
+    app_name: backend-api
+    app_directory: /opt/{{ app_name }}
+    app_user: appuser
+    app_group: appgroup
+    venv_path: "{{ app_directory }}/venv"
+    db_host: "{{ lookup('env', 'DB_HOST') | default('localhost', true) }}"
+    db_port: "{{ lookup('env', 'DB_PORT') | default('5432', true) }}"
+    db_name: "{{ lookup('env', 'DB_NAME') | default('mydb', true) }}"
+    db_user: "{{ lookup('env', 'DB_USER') | default('myuser', true) }}"
+    db_password: "{{ lookup('env', 'DB_PASSWORD') | default('mypassword', true) }}"
+    secret_key: "{{ lookup('env', 'SECRET_KEY') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=50'), true) }}"
+    jwt_secret_key: "{{ lookup('env', 'JWT_SECRET_KEY') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=50'), true) }}"
+
+  tasks:
+    - name: Install system dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - postgresql-client
+          - nginx
+        state: present
+        update_cache: yes
+
+    - name: Create app user
+      user:
+        name: "{{ app_user }}"
+        group: "{{ app_group }}"
+        system: yes
+        create_home: no
+        shell: /bin/false
+      register: app_user_created
+
+    - name: Create app group if not exists
+      group:
+        name: "{{ app_group }}"
+        system: yes
+        state: present
+      when: app_user_created is failed
+
+    - name: Create app directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Clone or update application repository
+      git:
+        repo: "{{ git_repo }}"
+        dest: "{{ app_directory }}/src"
+        version: "{{ git_branch | default('main') }}"
+        update: yes
+      become_user: "{{ app_user }}"
+      register: git_clone
+
+    - name: Create Python virtual environment
+      command:
+        cmd: python3 -m venv "{{ venv_path }}"
+        creates: "{{ venv_path }}/bin/activate"
+      become_user: "{{ app_user }}"
+
+    - name: Install Python requirements
+      pip:
+        requirements: "{{ app_directory }}/src/requirements.txt"
+        virtualenv: "{{ venv_path }}"
+      become_user: "{{ app_user }}"
+      register: pip_install
+
+    - name: Create environment file
+      template:
+        src: templates/.env.j2
+        dest: "{{ app_directory }}/src/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0600'
+      notify: Restart Gunicorn
+
+    - name: Create Gunicorn systemd service
+      template:
+        src: templates/gunicorn.service.j2
+        dest: /etc/systemd/system/{{ app_name }}.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Gunicorn
+
+    - name: Create Nginx configuration
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/{{ app_name }}
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/{{ app_name }}
+        dest: /etc/nginx/sites-enabled/{{ app_name }}
+        state: link
+      notify: Restart Nginx
+
+    - name: Start and enable services
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - "{{ app_name }}"
+        - nginx
+
+  handlers:
+    - name: Restart Gunicorn
+      systemd:
+        name: "{{ app_name }}"
+        state: restarted
+        daemon_reload: yes
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
