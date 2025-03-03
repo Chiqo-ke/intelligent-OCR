@@ -1,0 +1,15 @@
+[Unit]
+Description={{ app_name }} service
+After=network.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_directory }}/src
+ExecStart={{ venv_path }}/bin/gunicorn --workers 3 --bind unix:{{ app_directory }}/{{ app_name }}.sock -m 007 "app:create_app()"
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
