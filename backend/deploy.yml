@@ -1,5 +1,52 @@
 ---
-- name: Deploy Backend API
+- name: Clean Up Previous Deployment
+  hosts: app_servers
+  become: true
+  tasks:
+    - name: Stop the backend service if running
+      systemd:
+        name: backend-api
+        state: stopped
+      ignore_errors: yes
+
+    - name: Stop Nginx
+      systemd:
+        name: nginx
+        state: stopped
+      ignore_errors: yes
+
+    - name: Remove Gunicorn systemd service file
+      file:
+        path: /etc/systemd/system/backend-api.service
+        state: absent
+
+    - name: Remove Nginx configuration file for the app
+      file:
+        path: /etc/nginx/sites-available/backend-api
+        state: absent
+
+    - name: Remove enabled Nginx site link for the app
+      file:
+        path: /etc/nginx/sites-enabled/backend-api
+        state: absent
+
+    - name: Remove application directory
+      file:
+        path: /opt/backend-api
+        state: absent
+
+    - name: Remove app user if exists
+      user:
+        name: appuser
+        state: absent
+        remove: yes
+
+    - name: Remove app group if exists
+      group:
+        name: appgroup
+        state: absent
+
+- name: Deploy Backend API Fresh
   hosts: app_servers
   become: true
   vars:
@@ -8,13 +55,17 @@
     app_user: appuser
     app_group: appgroup
     venv_path: "{{ app_directory }}/venv"
+    # Database and secret configuration can be set via environment variables or overridden here.
     db_host: "{{ lookup('env', 'DB_HOST') | default('localhost', true) }}"
     db_port: "{{ lookup('env', 'DB_PORT') | default('5432', true) }}"
     db_name: "{{ lookup('env', 'DB_NAME') | default('mydb', true) }}"
-    db_user: "{{ lookup('env', 'DB_USER') | default('myuser', true) }}"
-    db_password: "{{ lookup('env', 'DB_PASSWORD') | default('mypassword', true) }}"
+    db_user: "{{ lookup('env', 'DB_USER') | default('postgres', true) }}"
+    db_password: "{{ lookup('env', 'DB_PASSWORD') | default('password', true) }}"
     secret_key: "{{ lookup('env', 'SECRET_KEY') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=50'), true) }}"
     jwt_secret_key: "{{ lookup('env', 'JWT_SECRET_KEY') | default(lookup('password', '/dev/null chars=ascii_letters,digits length=50'), true) }}"
+    # Define the Git repository and branch for your application code:
+    git_repo: "https://github.com/Chiqo-ke/intelligent-OCR"
+    git_branch: "backend"
 
   tasks:
     - name: Install system dependencies
@@ -28,23 +79,21 @@
         state: present
         update_cache: yes
 
+    - name: Create app group
+      group:
+        name: "{{ app_group }}"
+        state: present
+        system: yes
+
     - name: Create app user
       user:
         name: "{{ app_user }}"
         group: "{{ app_group }}"
         system: yes
-        create_home: no
+        create_home: yes
         shell: /bin/false
-      register: app_user_created
 
-    - name: Create app group if not exists
-      group:
-        name: "{{ app_group }}"
-        system: yes
-        state: present
-      when: app_user_created is failed
-
-    - name: Create app directory
+    - name: Create application directory
       file:
         path: "{{ app_directory }}"
         state: directory
@@ -56,25 +105,25 @@
       git:
         repo: "{{ git_repo }}"
         dest: "{{ app_directory }}/src"
-        version: "{{ git_branch | default('main') }}"
+        version: "{{ git_branch }}"
         update: yes
       become_user: "{{ app_user }}"
       register: git_clone
 
     - name: Create Python virtual environment
-      command:
-        cmd: python3 -m venv "{{ venv_path }}"
+      command: python3 -m venv "{{ venv_path }}"
+      args:
         creates: "{{ venv_path }}/bin/activate"
       become_user: "{{ app_user }}"
 
     - name: Install Python requirements
       pip:
-        requirements: "{{ app_directory }}/src/requirements.txt"
+        requirements: "{{ app_directory }}requirements.txt"
         virtualenv: "{{ venv_path }}"
       become_user: "{{ app_user }}"
       register: pip_install
 
-    - name: Create environment file
+    - name: Create environment file for the app
       template:
         src: templates/.env.j2
         dest: "{{ app_directory }}/src/.env"
@@ -83,7 +132,7 @@
         mode: '0600'
       notify: Restart Gunicorn
 
-    - name: Create Gunicorn systemd service
+    - name: Create Gunicorn systemd service file
       template:
         src: templates/gunicorn.service.j2
         dest: /etc/systemd/system/{{ app_name }}.service
@@ -92,7 +141,7 @@
         mode: '0644'
       notify: Restart Gunicorn
 
-    - name: Create Nginx configuration
+    - name: Create Nginx configuration file for the app
       template:
         src: templates/nginx.conf.j2
         dest: /etc/nginx/sites-available/{{ app_name }}
@@ -101,14 +150,14 @@
         mode: '0644'
       notify: Restart Nginx
 
-    - name: Enable Nginx site
+    - name: Enable Nginx site for the app
       file:
         src: /etc/nginx/sites-available/{{ app_name }}
         dest: /etc/nginx/sites-enabled/{{ app_name }}
         state: link
       notify: Restart Nginx
 
-    - name: Start and enable services
+    - name: Start and enable backend and Nginx services
       systemd:
         name: "{{ item }}"
         state: started
