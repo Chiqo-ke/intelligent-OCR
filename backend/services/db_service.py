@@ -1,6 +1,6 @@
-import psycopg2
+import psycopg2 # type: ignore
 from contextlib import contextmanager
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor # type: ignore
 from config.settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 
 def get_connection_string():
